@@ -5,6 +5,11 @@ import requests
 import json
 from datetime import datetime, timedelta
 import time
+import os
+from dotenv import load_dotenv
+
+# 환경 변수 로드
+load_dotenv()
 
 # 페이지 설정
 st.set_page_config(
@@ -141,7 +146,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # API 엔드포인트 설정
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 # 세션 상태 초기화
 if 'messages' not in st.session_state:
@@ -362,7 +367,7 @@ if st.session_state.pending_request and st.session_state.is_generating:
 
             # API 호출
             response = requests.post(
-                f"{API_BASE_URL}/api/v1/generate-report",
+                f"{API_BASE_URL}/generate-report",
                 json=request_data,
                 timeout=300
             )

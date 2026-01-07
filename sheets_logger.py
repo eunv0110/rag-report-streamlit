@@ -21,16 +21,25 @@ class SheetsLogger:
     def _initialize_client(self):
         """Google Sheets API 클라이언트 초기화"""
         try:
-            # Streamlit Cloud에서는 secrets 사용
-            if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
-                credentials_dict = dict(st.secrets['gcp_service_account'])
-            # 로컬 환경에서는 환경 변수 사용
-            else:
+            credentials_dict = None
+
+            # 1. Streamlit secrets 확인 (Streamlit 실행 중일 때만)
+            try:
+                if 'gcp_service_account' in st.secrets:
+                    credentials_dict = dict(st.secrets['gcp_service_account'])
+                    print("✅ Streamlit secrets에서 인증 정보 로드")
+            except:
+                pass
+
+            # 2. 환경 변수 확인 (로컬 또는 Streamlit secrets 없을 때)
+            if not credentials_dict:
                 credentials_json = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
-                if not credentials_json:
+                if credentials_json:
+                    credentials_dict = json.loads(credentials_json)
+                    print("✅ 환경 변수에서 인증 정보 로드")
+                else:
                     print("⚠️  Google Sheets credentials not found. Logging disabled.")
                     return
-                credentials_dict = json.loads(credentials_json)
 
             # 스코프 설정
             scopes = [
@@ -64,8 +73,13 @@ class SheetsLogger:
 
     def _get_spreadsheet_id(self) -> Optional[str]:
         """스프레드시트 ID 가져오기"""
-        if hasattr(st, 'secrets') and 'GOOGLE_SHEETS_ID' in st.secrets:
-            return st.secrets['GOOGLE_SHEETS_ID']
+        # Streamlit secrets 확인
+        try:
+            if 'GOOGLE_SHEETS_ID' in st.secrets:
+                return st.secrets['GOOGLE_SHEETS_ID']
+        except:
+            pass
+        # 환경 변수 확인
         return os.getenv('GOOGLE_SHEETS_ID')
 
     def _setup_worksheets(self, spreadsheet):

@@ -1,1 +1,7 @@
 .env
+*.json
+!package.json
+__pycache__/
+*.pyc
+.DS_Store
+report-generator-483608-2fea73d7b391.json

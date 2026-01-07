@@ -2,3 +2,5 @@ streamlit
 streamlit-chat
 requests
 python-dotenv
+gspread
+google-auth

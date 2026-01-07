@@ -7,9 +7,14 @@ from datetime import datetime, timedelta
 import time
 import os
 from dotenv import load_dotenv
+import uuid
+from sheets_logger import get_logger
 
 # 환경 변수 로드
 load_dotenv()
+
+# Google Sheets 로거 초기화
+logger = get_logger()
 
 # 페이지 설정
 st.set_page_config(
@@ -157,6 +162,8 @@ if 'is_generating' not in st.session_state:
     st.session_state.is_generating = False
 if 'pending_request' not in st.session_state:
     st.session_state.pending_request = None
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
 # 사이드바 - 서버 상태와 설정
 with st.sidebar:
@@ -277,14 +284,55 @@ with chat_container:
 
                 # 파일 다운로드 버튼이 있는 경우
                 if "file_data" in msg:
-                    st.download_button(
-                        label=f"📥 {msg['filename']} 다운로드",
-                        data=msg["file_data"],
-                        file_name=msg["filename"],
-                        mime=msg["mime_type"],
-                        use_container_width=True,
-                        key=f"download_{i}"
-                    )
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.download_button(
+                            label=f"📥 {msg['filename']} 다운로드",
+                            data=msg["file_data"],
+                            file_name=msg["filename"],
+                            mime=msg["mime_type"],
+                            use_container_width=True,
+                            key=f"download_{i}"
+                        )
+                    with col2:
+                        # 피드백 버튼
+                        if st.button("💬 피드백", key=f"feedback_btn_{i}", use_container_width=True):
+                            st.session_state[f"show_feedback_{i}"] = True
+
+                    # 피드백 입력 폼
+                    if st.session_state.get(f"show_feedback_{i}", False):
+                        with st.form(key=f"feedback_form_{i}"):
+                            st.markdown("#### 보고서 피드백")
+                            rating = st.slider("평점", 1, 5, 3, key=f"rating_{i}")
+                            feedback_text = st.text_area(
+                                "의견을 남겨주세요",
+                                placeholder="보고서에 대한 피드백을 자유롭게 작성해주세요...",
+                                key=f"feedback_text_{i}"
+                            )
+
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                submitted = st.form_submit_button("제출", use_container_width=True)
+                            with col2:
+                                cancelled = st.form_submit_button("취소", use_container_width=True)
+
+                            if submitted and feedback_text:
+                                # 피드백 저장
+                                logger.log_feedback(
+                                    rating=rating,
+                                    feedback_text=feedback_text,
+                                    report_type=msg.get("report_type", "unknown"),
+                                    user_input=st.session_state.messages[i-1]["content"] if i > 0 else "",
+                                    session_id=st.session_state.session_id
+                                )
+                                st.success("피드백이 저장되었습니다. 감사합니다!")
+                                st.session_state[f"show_feedback_{i}"] = False
+                                time.sleep(1)
+                                st.rerun()
+
+                            if cancelled:
+                                st.session_state[f"show_feedback_{i}"] = False
+                                st.rerun()
 
 # 진행 상황 말풍선 표시
 if st.session_state.progress_messages:
@@ -402,17 +450,30 @@ if st.session_state.pending_request and st.session_state.is_generating:
                     "timestamp": datetime.now().isoformat(),
                     "file_data": response.content,
                     "filename": filename,
-                    "mime_type": "application/pdf" if output_format == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    "mime_type": "application/pdf" if output_format == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "report_type": report_type
                 })
+
+                # 성공 로그 저장
+                logger.log_request(
+                    user_input=request_data.get("question", ""),
+                    request_data=request_data,
+                    response_time=generation_time,
+                    status="success",
+                    session_id=st.session_state.session_id
+                )
 
             else:
                 # 에러 응답
                 error_message = f"❌ 오류가 발생했습니다 (상태 코드: {response.status_code})"
+                error_detail = ""
                 try:
                     error_data = response.json()
-                    error_message += f"\n\n상세 내용: {error_data.get('detail', response.text)}"
+                    error_detail = error_data.get('detail', response.text)
+                    error_message += f"\n\n상세 내용: {error_detail}"
                 except:
-                    error_message += f"\n\n상세 내용: {response.text}"
+                    error_detail = response.text
+                    error_message += f"\n\n상세 내용: {error_detail}"
 
                 st.session_state.messages.append({
                     "role": "assistant",
@@ -420,26 +481,63 @@ if st.session_state.pending_request and st.session_state.is_generating:
                     "timestamp": datetime.now().isoformat()
                 })
 
+                # 에러 로그 저장
+                logger.log_request(
+                    user_input=request_data.get("question", ""),
+                    request_data=request_data,
+                    response_time=generation_time,
+                    status=f"error_{response.status_code}",
+                    error_message=error_detail,
+                    session_id=st.session_state.session_id
+                )
+
         except requests.exceptions.Timeout:
+            error_msg = "❌ 요청 시간이 초과되었습니다. 날짜 범위를 줄이거나 나중에 다시 시도해주세요."
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": "❌ 요청 시간이 초과되었습니다. 날짜 범위를 줄이거나 나중에 다시 시도해주세요.",
+                "content": error_msg,
                 "timestamp": datetime.now().isoformat()
             })
+            logger.log_request(
+                user_input=request_data.get("question", ""),
+                request_data=request_data,
+                response_time=time.time() - start_time,
+                status="timeout",
+                error_message="Request timeout",
+                session_id=st.session_state.session_id
+            )
 
         except requests.exceptions.ConnectionError:
+            error_msg = "❌ API 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요."
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": "❌ API 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.",
+                "content": error_msg,
                 "timestamp": datetime.now().isoformat()
             })
+            logger.log_request(
+                user_input=request_data.get("question", ""),
+                request_data=request_data,
+                response_time=0,
+                status="connection_error",
+                error_message="Cannot connect to API server",
+                session_id=st.session_state.session_id
+            )
 
         except Exception as e:
+            error_msg = f"❌ 예기치 않은 오류가 발생했습니다: {str(e)}"
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": f"❌ 예기치 않은 오류가 발생했습니다: {str(e)}",
+                "content": error_msg,
                 "timestamp": datetime.now().isoformat()
             })
+            logger.log_request(
+                user_input=request_data.get("question", ""),
+                request_data=request_data,
+                response_time=0,
+                status="exception",
+                error_message=str(e),
+                session_id=st.session_state.session_id
+            )
 
         finally:
             # 진행 상황 초기화

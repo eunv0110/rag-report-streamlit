@@ -8,13 +8,8 @@ import time
 import os
 from dotenv import load_dotenv
 import uuid
-from sheets_logger import get_logger
-
 # 환경 변수 로드
 load_dotenv()
-
-# Google Sheets 로거 초기화
-logger = get_logger()
 
 # 페이지 설정
 st.set_page_config(
@@ -303,7 +298,7 @@ with chat_container:
                     if st.session_state.get(f"show_feedback_{i}", False):
                         with st.form(key=f"feedback_form_{i}"):
                             st.markdown("#### 보고서 피드백")
-                            rating = st.slider("평점", 1, 5, 3, key=f"rating_{i}")
+                            rating = st.slider("평점 (1-10)", 1, 10, 5, key=f"rating_{i}", help="1: 매우 나쁨, 10: 매우 좋음")
                             feedback_text = st.text_area(
                                 "의견을 남겨주세요",
                                 placeholder="보고서에 대한 피드백을 자유롭게 작성해주세요...",
@@ -316,16 +311,36 @@ with chat_container:
                             with col2:
                                 cancelled = st.form_submit_button("취소", use_container_width=True)
 
-                            if submitted and feedback_text:
-                                # 피드백 저장
-                                logger.log_feedback(
-                                    rating=rating,
-                                    feedback_text=feedback_text,
-                                    report_type=msg.get("report_type", "unknown"),
-                                    user_input=st.session_state.messages[i-1]["content"] if i > 0 else "",
-                                    session_id=st.session_state.session_id
-                                )
-                                st.success("피드백이 저장되었습니다. 감사합니다!")
+                            if submitted:
+                                # trace_id 추출
+                                trace_id = msg.get("trace_id")
+
+                                if trace_id:
+                                    try:
+                                        # 피드백 API 호출
+                                        feedback_payload = {
+                                            "trace_id": trace_id,
+                                            "score": rating,
+                                            "comment": feedback_text if feedback_text else None,
+                                            "feedback_type": "user_satisfaction"
+                                        }
+
+                                        feedback_response = requests.post(
+                                            f"{API_BASE_URL}/feedback",
+                                            json=feedback_payload,
+                                            timeout=10
+                                        )
+
+                                        if feedback_response.status_code == 200:
+                                            st.success("✅ 피드백이 성공적으로 저장되었습니다!")
+                                        else:
+                                            st.error(f"❌ 피드백 저장 실패: {feedback_response.text}")
+
+                                    except Exception as e:
+                                        st.error(f"❌ 피드백 제출 중 오류 발생: {str(e)}")
+                                else:
+                                    st.warning("⚠️ trace_id가 없어 피드백을 저장할 수 없습니다.")
+
                                 st.session_state[f"show_feedback_{i}"] = False
                                 time.sleep(1)
                                 st.rerun()
@@ -441,6 +456,9 @@ if st.session_state.pending_request and st.session_state.is_generating:
                 output_format = request_data["output_format"]
                 filename = f"{report_type}_report_{timestamp}.{output_format}"
 
+                # trace_id 추출 (response headers에서)
+                trace_id = response.headers.get("X-Trace-ID")
+
                 # 어시스턴트 메시지 추가 (간단하게)
                 assistant_message = f"✅ 보고서가 성공적으로 생성되었습니다! ({generation_time:.2f}초)"
 
@@ -451,17 +469,11 @@ if st.session_state.pending_request and st.session_state.is_generating:
                     "file_data": response.content,
                     "filename": filename,
                     "mime_type": "application/pdf" if output_format == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "report_type": report_type
+                    "report_type": report_type,
+                    "trace_id": trace_id  # trace_id 추가
                 })
 
-                # 성공 로그 저장
-                logger.log_request(
-                    user_input=request_data.get("question", ""),
-                    request_data=request_data,
-                    response_time=generation_time,
-                    status="success",
-                    session_id=st.session_state.session_id
-                )
+                # 로깅 비활성화됨
 
             else:
                 # 에러 응답
@@ -481,15 +493,7 @@ if st.session_state.pending_request and st.session_state.is_generating:
                     "timestamp": datetime.now().isoformat()
                 })
 
-                # 에러 로그 저장
-                logger.log_request(
-                    user_input=request_data.get("question", ""),
-                    request_data=request_data,
-                    response_time=generation_time,
-                    status=f"error_{response.status_code}",
-                    error_message=error_detail,
-                    session_id=st.session_state.session_id
-                )
+                # 로깅 비활성화됨
 
         except requests.exceptions.Timeout:
             error_msg = "❌ 요청 시간이 초과되었습니다. 날짜 범위를 줄이거나 나중에 다시 시도해주세요."
@@ -498,14 +502,7 @@ if st.session_state.pending_request and st.session_state.is_generating:
                 "content": error_msg,
                 "timestamp": datetime.now().isoformat()
             })
-            logger.log_request(
-                user_input=request_data.get("question", ""),
-                request_data=request_data,
-                response_time=time.time() - start_time,
-                status="timeout",
-                error_message="Request timeout",
-                session_id=st.session_state.session_id
-            )
+            # 로깅 비활성화됨
 
         except requests.exceptions.ConnectionError:
             error_msg = "❌ API 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요."
@@ -514,14 +511,7 @@ if st.session_state.pending_request and st.session_state.is_generating:
                 "content": error_msg,
                 "timestamp": datetime.now().isoformat()
             })
-            logger.log_request(
-                user_input=request_data.get("question", ""),
-                request_data=request_data,
-                response_time=0,
-                status="connection_error",
-                error_message="Cannot connect to API server",
-                session_id=st.session_state.session_id
-            )
+            # 로깅 비활성화됨
 
         except Exception as e:
             error_msg = f"❌ 예기치 않은 오류가 발생했습니다: {str(e)}"
@@ -530,14 +520,7 @@ if st.session_state.pending_request and st.session_state.is_generating:
                 "content": error_msg,
                 "timestamp": datetime.now().isoformat()
             })
-            logger.log_request(
-                user_input=request_data.get("question", ""),
-                request_data=request_data,
-                response_time=0,
-                status="exception",
-                error_message=str(e),
-                session_id=st.session_state.session_id
-            )
+            # 로깅 비활성화됨
 
         finally:
             # 진행 상황 초기화

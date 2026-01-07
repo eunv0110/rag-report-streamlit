@@ -146,7 +146,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # API 엔드포인트 설정
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Streamlit Cloud secrets 우선, 그 다음 환경 변수, 마지막으로 기본값
+try:
+    API_BASE_URL = st.secrets.get("API_BASE_URL", os.getenv("API_BASE_URL", "http://localhost:8000"))
+except:
+    API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 # 세션 상태 초기화
 if 'messages' not in st.session_state:
